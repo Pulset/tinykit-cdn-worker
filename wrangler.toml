@@ -5,8 +5,8 @@ compatibility_date = "2025-01-20"
 # R2 存储桶绑定
 [[r2_buckets]]
 binding = "CDN_BUCKET"
-bucket_name = "tinykit"  # 替换为你实际的 bucket 名称
-remote = true
+bucket_name = "tinykit"  # 生产环境的 bucket
+#preview_bucket_name = "tinykit-dev"  # 开发环境的 bucket
 
 # 自定义域名路由（部署后在 Cloudflare Dashboard 配置）
 # cdn.tinykit.app/* -> this worker
