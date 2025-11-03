@@ -120,7 +120,7 @@ tinykit-assets/
 
 ```bash
 # 上传单个文件
-npx wrangler r2 object put tinykit-assets/file-sortify/images/hero.png --file ./hero.png
+npx wrangler r2 object put cdn.tinykit.app/file-sortify/images/logo.png --file ./logo.png
 
 # 上传目录（需要脚本）
 # 或使用 Cloudflare Dashboard 上传
@@ -131,7 +131,7 @@ npx wrangler r2 object put tinykit-assets/file-sortify/images/hero.png --file ./
 部署完成后，通过以下 URL 访问：
 
 ```
-https://cdn.tinykit.app/file-sortify/images/hero-banner.png
+https://cdn.tinykit.app/file-sortify/images/logo.png
 https://cdn.tinykit.app/file-sortify/downloads/FileSortify-v1.0.dmg
 ```
 
@@ -236,7 +236,7 @@ npm run tail
 
 ```bash
 # 清除特定文件缓存
-curl -X PURGE https://cdn.tinykit.app/file-sortify/images/hero.png
+curl -X PURGE https://cdn.tinykit.app/file-sortify/images/logo.png
 ```
 
 ## 相关链接
