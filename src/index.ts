@@ -7,6 +7,8 @@ interface Env {
   CDN_BUCKET: R2Bucket;
   ALLOWED_ORIGINS?: string;
   MAX_FILE_SIZE?: string;
+  UPLOAD_SECRET?: string; // 上传API的安全密钥
+  UPLOAD_ALLOWED_ORIGINS?: string; // 允许上传的来源
 }
 
 // 支持的文件类型 MIME 映射
@@ -88,11 +90,192 @@ function getCacheConfig(path: string): { cacheControl: string; cacheTtl: number 
   }
 }
 
+// 验证上传请求的安全性
+function validateUploadRequest(request: Request, env: Env): { valid: boolean; error?: string } {
+  // 检查是否配置了上传密钥
+  if (!env.UPLOAD_SECRET) {
+    return { valid: false, error: 'Upload functionality not configured' };
+  }
+
+  // 验证 Authorization header
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid authorization header' };
+  }
+
+  const token = authHeader.substring(7);
+  if (token !== env.UPLOAD_SECRET) {
+    return { valid: false, error: 'Invalid authorization token' };
+  }
+
+  // 验证请求来源（如果配置了允许的来源）
+  if (env.UPLOAD_ALLOWED_ORIGINS) {
+    const origin = request.headers.get('Origin');
+    const referer = request.headers.get('Referer');
+
+    if (!origin && !referer) {
+      return { valid: false, error: 'Origin verification failed' };
+    }
+
+    const allowed = env.UPLOAD_ALLOWED_ORIGINS.split(',').map(o => o.trim());
+    const isAllowed = (origin && allowed.some(o => origin.includes(o))) ||
+                     (referer && allowed.some(o => referer.includes(o)));
+
+    if (!isAllowed) {
+      return { valid: false, error: 'Origin not allowed for uploads' };
+    }
+  }
+
+  return { valid: true };
+}
+
+// 验证文件路径安全性
+function validateFilePath(key: string): { valid: boolean; error?: string } {
+  // 禁止路径遍历攻击
+  if (key.includes('..') || key.includes('//') || key.startsWith('/')) {
+    return { valid: false, error: 'Invalid file path' };
+  }
+
+  // 检查文件扩展名是否在允许列表中
+  const allowedExtensions = Object.keys(CONTENT_TYPES);
+  const ext = key.substring(key.lastIndexOf('.')).toLowerCase();
+
+  if (!allowedExtensions.includes(ext)) {
+    return { valid: false, error: 'File type not allowed' };
+  }
+
+  // 限制路径长度
+  if (key.length > 500) {
+    return { valid: false, error: 'File path too long' };
+  }
+
+  return { valid: true };
+}
+
+// 处理文件上传请求
+async function handleUpload(request: Request, env: Env): Promise<Response> {
+  try {
+    // 验证上传请求安全性
+    const validation = validateUploadRequest(request, env);
+    if (!validation.valid) {
+      return new Response(JSON.stringify({
+        error: validation.error,
+        code: 'UNAUTHORIZED'
+      }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    const url = new URL(request.url);
+    const key = url.pathname.slice(9); // 移除 "/upload/" 前缀
+
+    // 验证文件路径
+    const pathValidation = validateFilePath(key);
+    if (!pathValidation.valid) {
+      return new Response(JSON.stringify({
+        error: pathValidation.error,
+        code: 'INVALID_PATH'
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 检查文件大小限制
+    const contentLength = request.headers.get('Content-Length');
+    const maxSize = parseInt(env.MAX_FILE_SIZE || '104857600'); // 默认100MB
+
+    if (contentLength && parseInt(contentLength) > maxSize) {
+      return new Response(JSON.stringify({
+        error: `File too large. Maximum size: ${maxSize} bytes`,
+        code: 'FILE_TOO_LARGE'
+      }), {
+        status: 413,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 读取文件数据
+    const fileData = await request.arrayBuffer();
+
+    // 再次检查文件大小
+    if (fileData.byteLength > maxSize) {
+      return new Response(JSON.stringify({
+        error: `File too large. Maximum size: ${maxSize} bytes`,
+        code: 'FILE_TOO_LARGE'
+      }), {
+        status: 413,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 检测文件MIME类型
+    const detectedContentType = getContentType(key);
+
+    // 上传到R2
+    await env.CDN_BUCKET.put(key, fileData, {
+      httpMetadata: {
+        contentType: detectedContentType
+      }
+    });
+
+    // 返回成功响应
+    return new Response(JSON.stringify({
+      success: true,
+      message: 'File uploaded successfully',
+      data: {
+        key: key,
+        size: fileData.byteLength,
+        contentType: detectedContentType,
+        url: `${url.origin}/${key}`,
+        timestamp: new Date().toISOString()
+      }
+    }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+
+  } catch (error) {
+    console.error('Upload error:', error);
+    return new Response(JSON.stringify({
+      error: 'Upload failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      code: 'UPLOAD_ERROR'
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
-    // 仅支持 GET 和 HEAD 请求
+    // 处理 CORS 预检请求
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 200,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Access-Control-Max-Age': '86400',
+        }
+      });
+    }
+
+    // 处理文件上传请求
+    if (request.method === 'POST' && url.pathname.startsWith('/upload/')) {
+      return handleUpload(request, env);
+    }
+
+    // 仅支持 GET 和 HEAD 请求用于文件访问
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method Not Allowed', { status: 405 });
     }

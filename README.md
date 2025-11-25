@@ -1,6 +1,6 @@
 # TinyKit CDN Worker
 
-Cloudflare Worker 用于安全地访问 R2 存储桶中的静态资源。
+Cloudflare Worker 用于安全地访问和上传 R2 存储桶中的静态资源。
 
 ## 功能特性
 
@@ -9,6 +9,13 @@ Cloudflare Worker 用于安全地访问 R2 存储桶中的静态资源。
 - 防盗链保护（Origin/Referer 验证）
 - 可配置的访问白名单
 - 文件大小限制
+- 上传API密钥验证
+
+✅ **文件管理**
+
+- 安全的文件上传API
+- 自动MIME类型检测
+- 支持多种文件格式
 
 ✅ **性能优化**
 
@@ -23,11 +30,13 @@ Cloudflare Worker 用于安全地访问 R2 存储桶中的静态资源。
 - 应用程序（DMG, PKG, ZIP）
 - 文档（PDF, JSON）
 - 字体文件
+- 视频格式（MP4, WebM）
 
 ✅ **下载支持**
 
 - 自动设置 Content-Disposition
 - 支持大文件下载
+- 条件请求支持（304 Not Modified）
 
 ## 部署步骤
 
@@ -58,7 +67,14 @@ bucket_name = "tinykit"  # 替换为你实际的 bucket 名称
 [vars]
 ALLOWED_ORIGINS = "tinykit.app,*.tinykit.app"  # 生产环境设置具体域名
 MAX_FILE_SIZE = "104857600"  # 100MB，根据需要调整
+UPLOAD_SECRET = "your-very-secure-secret-key"  # 上传API密钥，务必使用强密码
+UPLOAD_ALLOWED_ORIGINS = "admin.tinykit.app,localhost:3000"  # 允许上传的域名
 ```
+
+**重要安全提示：**
+- `UPLOAD_SECRET` 必须设置为强密码，建议使用32位以上随机字符串
+- `UPLOAD_ALLOWED_ORIGINS` 限制只有指定域名可以上传文件
+- 生产环境不要使用默认的密钥
 
 ### 4. 登录 Cloudflare
 
@@ -97,9 +113,96 @@ https://tinykit.your-account.workers.dev
 
 ## 使用示例
 
-### 上传文件到 R2
+### API 文件上传
 
-推荐的目录结构：
+#### 上传单个文件
+
+```bash
+curl -X POST https://cdn.tinykit.app/upload/file-sortify/images/logo.png \
+  -H "Authorization: Bearer your-very-secure-secret-key" \
+  -H "Content-Type: image/png" \
+  --data-binary @./logo.png
+```
+
+**响应示例：**
+```json
+{
+  "success": true,
+  "message": "File uploaded successfully",
+  "data": {
+    "key": "file-sortify/images/logo.png",
+    "size": 12345,
+    "contentType": "image/png",
+    "url": "https://cdn.tinykit.app/file-sortify/images/logo.png",
+    "timestamp": "2025-01-20T12:00:00.000Z"
+  }
+}
+```
+
+#### JavaScript 上传示例
+
+```javascript
+async function uploadFile(file, targetPath) {
+  const response = await fetch(`https://cdn.tinykit.app/upload/${targetPath}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer your-very-secure-secret-key',
+      'Content-Type': file.type
+    },
+    body: file
+  });
+
+  const result = await response.json();
+  return result;
+}
+
+// 使用示例
+const fileInput = document.getElementById('file');
+const file = fileInput.files[0];
+const result = await uploadFile(file, 'file-sortify/images/new-logo.png');
+console.log('上传结果:', result);
+```
+
+
+### 批量上传脚本
+
+创建一个批量上传脚本 `upload.js`：
+
+```javascript
+const fs = require('fs');
+const path = require('path');
+
+async function uploadDirectory(localDir, remotePrefix) {
+  const files = fs.readdirSync(localDir, { withFileTypes: true });
+
+  for (const file of files) {
+    const localPath = path.join(localDir, file.name);
+    const remotePath = `${remotePrefix}/${file.name}`;
+
+    if (file.isDirectory()) {
+      await uploadDirectory(localPath, remotePath);
+    } else {
+      const fileContent = fs.readFileSync(localPath);
+      const response = await fetch(`https://cdn.tinykit.app/upload/${remotePath}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer your-very-secure-secret-key',
+          'Content-Type': 'application/octet-stream'
+        },
+        body: fileContent
+      });
+
+      const result = await response.json();
+      console.log(`上传 ${remotePath}:`, result.success ? '成功' : '失败');
+    }
+  }
+}
+
+// 使用示例
+uploadDirectory('./assets', 'tinykit-app');
+```
+
+### 推荐的目录结构
 
 ```
 tinykit-assets/
@@ -114,16 +217,6 @@ tinykit-assets/
 │   └── images/
 └── shared/
     └── brand/
-```
-
-使用 wrangler 上传：
-
-```bash
-# 上传单个文件
-npx wrangler r2 object put cdn.tinykit.app/file-sortify/images/logo.png --file ./logo.png
-
-# 上传目录（需要脚本）
-# 或使用 Cloudflare Dashboard 上传
 ```
 
 ### 访问文件
@@ -163,10 +256,18 @@ Worker 会根据文件类型自动设置缓存：
 
 ## 安全特性
 
+### 访问安全
 1. **防盗链**：通过 `ALLOWED_ORIGINS` 限制访问来源
 2. **文件大小限制**：通过 `MAX_FILE_SIZE` 防止超大文件访问
 3. **CORS 支持**：自动处理跨域请求
 4. **安全头**：自动添加 `X-Content-Type-Options: nosniff`
+
+### 上传安全
+1. **密钥验证**：所有上传请求需要有效的 `UPLOAD_SECRET`
+2. **来源限制**：通过 `UPLOAD_ALLOWED_ORIGINS` 限制上传来源
+3. **路径验证**：防止路径遍历攻击（禁止 `../` 等）
+4. **文件类型限制**：只允许预定义的文件扩展名
+5. **大小检查**：上传前和上传后都检查文件大小
 
 ## 监控和日志
 
@@ -217,6 +318,15 @@ npm run tail
 - 查看 Worker 日志：`npm run tail`
 - 检查 R2 bucket 绑定是否正确
 
+## API 错误代码
+
+| 错误代码 | HTTP状态码 | 描述 | 解决方案 |
+|---------|-----------|------|---------|
+| UNAUTHORIZED | 401 | 无效的上传密钥或来源 | 检查 `Authorization` 头部和域名配置 |
+| INVALID_PATH | 400 | 无效的文件路径 | 避免使用 `../` 或绝对路径 |
+| FILE_TOO_LARGE | 413 | 文件超出大小限制 | 检查 `MAX_FILE_SIZE` 配置 |
+| UPLOAD_ERROR | 500 | 上传失败 | 检查 R2 配置和网络连接 |
+
 ## 进阶配置
 
 ### 图片实时处理
@@ -239,8 +349,48 @@ npm run tail
 curl -X PURGE https://cdn.tinykit.app/file-sortify/images/logo.png
 ```
 
+### 管理后台集成
+
+可以基于上传API构建一个简单的管理后台：
+
+```javascript
+// 管理后台示例代码
+const API_BASE = 'https://cdn.tinykit.app';
+const API_SECRET = 'your-very-secure-secret-key';
+
+class CDNManager {
+  async uploadFile(file, path) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE}/upload/${path}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${API_SECRET}`
+      },
+      body: file
+    });
+
+    return response.json();
+  }
+
+  async listFiles(prefix = '') {
+    // 可以扩展一个列表API
+    // 需要在Worker中添加对应的处理逻辑
+  }
+}
+```
+
+## 性能优化建议
+
+1. **压缩上传**：对于大文件，可以在客户端先压缩
+2. **分片上传**：支持超大文件的分片上传和断点续传
+3. **CDN预热**：重要文件可以提前预热到CDN边缘节点
+4. **批量操作**：减少API调用次数，提高效率
+
 ## 相关链接
 
 - [Cloudflare R2 文档](https://developers.cloudflare.com/r2/)
 - [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
 - [Wrangler CLI 文档](https://developers.cloudflare.com/workers/wrangler/)
+- [Fetch API 文档](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API)
