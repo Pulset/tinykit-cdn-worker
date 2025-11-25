@@ -1,0 +1,14 @@
+{
+  "configurations": [
+    {
+      "attachExistingChildren": false,
+      "autoAttachChildProcesses": false,
+      "cwd": "/",
+      "name": "Wrangler",
+      "port": 9229,
+      "request": "attach",
+      "resolveSourceMapLocations": null,
+      "type": "node"
+    }
+  ]
+}
