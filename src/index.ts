@@ -329,7 +329,7 @@ function validateFilePath(key: string): { valid: boolean; error?: string } {
 async function handleUpload(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url);
-    const key = url.pathname.slice(9); // 移除 "/upload/" 前缀
+    const key = url.pathname.slice(8); // 移除 "/upload/" 前缀
 
     // 验证上传请求安全性
     const validation = await validateUploadRequest(request, env, key);
