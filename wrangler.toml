@@ -16,7 +16,7 @@ bucket_name = "tinykit"  # 生产环境的 bucket
 ALLOWED_ORIGINS = "*"  # 允许的来源，生产环境建议设置具体域名
 MAX_FILE_SIZE = "104857600"  # 100MB
 #UPLOAD_ALLOWED_ORIGINS = ""  # 允许上传的来源
-JWT_SECRETS = '{"file-sortify": "secret1", "video-app": "secret2", "hairStyle": "HNk7yNO1TMQeKzUxjnk4VEaZuc65O+0ATaPIhesVimc="}'  # 多应用JWT密钥映射，JSON格式（必配）
+JWT_SECRETS = '{"file-sortify": "secret1", "video-app": "secret2", "hairstyle": "HNk7yNO1TMQeKzUxjnk4VEaZuc65O+0ATaPIhesVimc="}'  # 多应用JWT密钥映射，JSON格式（必配）
 
 [observability]
 [observability.logs]
