@@ -98,7 +98,7 @@ function getCacheConfig(path: string): {
 // JWT解密函数（使用Web Crypto API）
 async function parseJWTToken(
   token: string,
-  secrets: { [key: string]: string }
+  secrets: { [key: string]: string },
 ): Promise<{ valid: boolean; payload?: any; error?: string }> {
   // 输入验证
   if (!token || typeof token !== 'string') {
@@ -189,7 +189,7 @@ async function parseJWTToken(
       keyData,
       { name: 'HMAC', hash: 'SHA-256' },
       false,
-      ['verify']
+      ['verify'],
     );
 
     // 安全的Base64解码签名
@@ -210,7 +210,7 @@ async function parseJWTToken(
       'HMAC',
       key,
       signatureArray,
-      data
+      data,
     );
 
     if (!isValid) {
@@ -228,7 +228,7 @@ async function parseJWTToken(
 async function validateUploadRequest(
   request: Request,
   env: Env,
-  key: string
+  key: string,
 ): Promise<{ valid: boolean; error?: string; tokenData?: any }> {
   // 验证请求来源（如果配置了允许的来源）
   if (env.UPLOAD_ALLOWED_ORIGINS) {
@@ -342,7 +342,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         {
           status: 401,
           headers: { 'Content-Type': 'application/json' },
-        }
+        },
       );
     }
 
@@ -357,7 +357,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
-        }
+        },
       );
     }
 
@@ -378,12 +378,35 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         {
           status: 413,
           headers: { 'Content-Type': 'application/json' },
-        }
+        },
       );
     }
 
-    // 读取文件数据
-    const fileData = await request.arrayBuffer();
+    // 读取文件数据：根据 Content-Type 判断提取方式
+    let fileData: ArrayBuffer;
+    const requestContentType = request.headers.get('Content-Type') || '';
+
+    if (requestContentType.includes('multipart/form-data')) {
+      // multipart/form-data 表单上传，从 file 字段提取
+      const formData = await request.formData();
+      const file = formData.get('file');
+      if (!file || !(file instanceof File)) {
+        return new Response(
+          JSON.stringify({
+            error: 'Missing "file" field in multipart form data',
+            code: 'MISSING_FILE_FIELD',
+          }),
+          {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        );
+      }
+      fileData = await file.arrayBuffer();
+    } else {
+      // 直接二进制流上传
+      fileData = await request.arrayBuffer();
+    }
 
     // 再次检查文件大小
     if (fileData.byteLength > maxSize) {
@@ -395,7 +418,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         {
           status: 413,
           headers: { 'Content-Type': 'application/json' },
-        }
+        },
       );
     }
 
@@ -409,14 +432,14 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
         return new Response(
           JSON.stringify({
             error: `File extension not allowed: ${fileExt}. Allowed: ${validation.tokenData.allowedExtensions.join(
-              ', '
+              ', ',
             )}`,
             code: 'EXTENSION_NOT_ALLOWED',
           }),
           {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
-          }
+          },
         );
       }
     }
@@ -449,7 +472,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*',
         },
-      }
+      },
     );
   } catch (error) {
     console.error('Upload error:', error);
@@ -462,7 +485,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
       {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
-      }
+      },
     );
   }
 }
@@ -471,7 +494,7 @@ export default {
   async fetch(
     request: Request,
     env: Env,
-    ctx: ExecutionContext
+    ctx: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
 
@@ -508,7 +531,7 @@ export default {
         }),
         {
           headers: { 'Content-Type': 'application/json' },
-        }
+        },
       );
     }
 
@@ -606,7 +629,7 @@ export default {
       // Content-Type
       headers.set(
         'Content-Type',
-        object.httpMetadata?.contentType || getContentType(key)
+        object.httpMetadata?.contentType || getContentType(key),
       );
 
       // 获取缓存配置
@@ -631,7 +654,7 @@ export default {
       if (origin) {
         headers.set(
           'Access-Control-Allow-Origin',
-          allowedOrigins === '*' ? '*' : origin
+          allowedOrigins === '*' ? '*' : origin,
         );
         headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
         headers.set('Access-Control-Max-Age', '86400');
@@ -657,7 +680,7 @@ export default {
         const filename = key.split('/').pop();
         headers.set(
           'Content-Disposition',
-          `attachment; filename="${filename}"`
+          `attachment; filename="${filename}"`,
         );
       }
 
