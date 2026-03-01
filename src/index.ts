@@ -9,6 +9,7 @@ interface Env {
   MAX_FILE_SIZE?: string;
   UPLOAD_ALLOWED_ORIGINS?: string; // 允许上传的来源域名
   JWT_SECRETS?: string; // 多应用JWT密钥映射，JSON格式: {"app1": "secret1", "app2": "secret2"}
+  TOKEN_API_KEYS?: string; // Token API 密钥，用于调用 /token 接口的认证，JSON格式: {"app1": "key1", "app2": "key2"}
 }
 
 // 支持的文件类型 MIME 映射
@@ -92,6 +93,271 @@ function getCacheConfig(path: string): {
       cacheControl: 'public, max-age=86400', // 1天
       cacheTtl: 86400,
     };
+  }
+}
+
+// JWT 生成函数（使用 Web Crypto API）
+async function generateJWT(payload: any, secret: string): Promise<string> {
+  const header = { alg: 'HS256', typ: 'JWT' };
+
+  const base64UrlEncode = (str: string): string => {
+    const base64 = btoa(str);
+    return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+
+  const encodedHeader = base64UrlEncode(JSON.stringify(header));
+  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+  const data = `${encodedHeader}.${encodedPayload}`;
+
+  const keyData = new TextEncoder().encode(secret);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyData,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(data),
+  );
+  const signatureBase64 = btoa(
+    String.fromCharCode(...new Uint8Array(signature)),
+  );
+  const encodedSignature = signatureBase64
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  return `${data}.${encodedSignature}`;
+}
+
+// 验证 Token API 请求
+async function validateTokenAPIRequest(
+  request: Request,
+  env: Env,
+): Promise<{ valid: boolean; error?: string; appName?: string }> {
+  // 检查 TOKEN_API_KEYS 配置
+  if (!env.TOKEN_API_KEYS) {
+    return { valid: false, error: 'TOKEN_API_KEYS not configured' };
+  }
+
+  let apiKeys: { [key: string]: string };
+  try {
+    apiKeys = JSON.parse(env.TOKEN_API_KEYS);
+  } catch (error) {
+    return { valid: false, error: 'Invalid TOKEN_API_KEYS configuration' };
+  }
+
+  // 检查 Authorization 头
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return { valid: false, error: 'Missing or invalid authorization header' };
+  }
+
+  const apiKey = authHeader.substring(7);
+
+  // 验证 API Key 并获取应用名称
+  let appName: string | undefined;
+  for (const [app, key] of Object.entries(apiKeys)) {
+    if (key === apiKey) {
+      appName = app;
+      break;
+    }
+  }
+
+  if (!appName) {
+    return { valid: false, error: 'Invalid API key' };
+  }
+
+  // 验证请求来源（如果配置了）
+  if (env.UPLOAD_ALLOWED_ORIGINS) {
+    const origin = request.headers.get('Origin');
+    const referer = request.headers.get('Referer');
+
+    if (origin || referer) {
+      const allowed = env.UPLOAD_ALLOWED_ORIGINS.split(',').map((o) =>
+        o.trim(),
+      );
+      const isAllowed =
+        (origin && allowed.some((o) => origin.includes(o))) ||
+        (referer && allowed.some((o) => referer.includes(o)));
+
+      if (!isAllowed) {
+        return { valid: false, error: 'Origin not allowed' };
+      }
+    }
+  }
+
+  return { valid: true, appName };
+}
+
+// 处理 Token 生成请求
+async function handleTokenRequest(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  try {
+    // 验证 API 请求
+    const validation = await validateTokenAPIRequest(request, env);
+    if (!validation.valid || !validation.appName) {
+      return new Response(
+        JSON.stringify({
+          error: validation.error || 'Unauthorized',
+          code: 'UNAUTHORIZED',
+        }),
+        {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    }
+
+    const appName = validation.appName;
+
+    // 检查 JWT_SECRETS 配置
+    if (!env.JWT_SECRETS) {
+      return new Response(
+        JSON.stringify({
+          error: 'JWT_SECRETS not configured',
+          code: 'CONFIG_ERROR',
+        }),
+        {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    }
+
+    let jwtSecrets: { [key: string]: string };
+    try {
+      jwtSecrets = JSON.parse(env.JWT_SECRETS);
+    } catch (error) {
+      return new Response(
+        JSON.stringify({
+          error: 'Invalid JWT_SECRETS configuration',
+          code: 'CONFIG_ERROR',
+        }),
+        {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    }
+
+    const appSecret = jwtSecrets[appName];
+    if (!appSecret) {
+      return new Response(
+        JSON.stringify({
+          error: `No JWT secret configured for app: ${appName}`,
+          code: 'CONFIG_ERROR',
+        }),
+        {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    }
+
+    // 解析请求参数
+    let params: {
+      maxAge?: number;
+      maxFileSize?: number;
+      allowedExtensions?: string[];
+      customPath?: string;
+    };
+
+    const contentType = request.headers.get('Content-Type') || '';
+
+    if (contentType.includes('application/json')) {
+      const body = await request.json();
+      params = body;
+    } else {
+      // 支持 URL 参数
+      const url = new URL(request.url);
+      params = {
+        maxAge: url.searchParams.get('maxAge')
+          ? parseInt(url.searchParams.get('maxAge')!)
+          : undefined,
+        maxFileSize: url.searchParams.get('maxFileSize')
+          ? parseInt(url.searchParams.get('maxFileSize')!)
+          : undefined,
+        allowedExtensions: url.searchParams.get('allowedExtensions')
+          ? url.searchParams.get('allowedExtensions')!.split(',')
+          : undefined,
+        customPath: url.searchParams.get('customPath') || undefined,
+      };
+    }
+
+    // 设置默认值和限制
+    const maxAge = Math.min(params.maxAge || 3600, 86400); // 最大 24 小时
+    const maxSize = Math.min(
+      params.maxFileSize || parseInt(env.MAX_FILE_SIZE || '10485760'),
+      parseInt(env.MAX_FILE_SIZE || '104857600'),
+    ); // 默认 10MB，最大 100MB
+
+    // 默认允许的扩展名（图片）
+    const allowedExtensions = params.allowedExtensions || [
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.webp',
+      '.heic',
+      '.heif',
+    ];
+
+    // 限制上传路径
+    const customPath = params.customPath || `${appName}/*`;
+
+    // 生成 Token Payload
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      exp: now + maxAge,
+      iat: now,
+      appName: appName,
+      allowedPaths: [customPath],
+      maxFileSize: maxSize,
+      allowedExtensions: allowedExtensions,
+      created: new Date().toISOString(),
+    };
+
+    // 生成 JWT
+    const token = await generateJWT(payload, appSecret);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          token: token,
+          expiresIn: maxAge,
+          maxFileSize: maxSize,
+          allowedExtensions: allowedExtensions,
+          allowedPaths: [customPath],
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Token generation error:', error);
+    return new Response(
+      JSON.stringify({
+        error: 'Token generation failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        code: 'TOKEN_ERROR',
+      }),
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
   }
 }
 
@@ -509,6 +775,11 @@ export default {
           'Access-Control-Max-Age': '86400',
         },
       });
+    }
+
+    // 处理 Token 生成请求
+    if (request.method === 'POST' && url.pathname === '/token') {
+      return handleTokenRequest(request, env);
     }
 
     // 处理文件上传请求
