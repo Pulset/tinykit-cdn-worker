@@ -490,11 +490,12 @@ async function parseJWTToken(
   }
 }
 
-// 验证上传请求的安全性（仅支持JWT Token）
-async function validateUploadRequest(
+// 验证资源变更请求的安全性（仅支持JWT Token）
+async function validateMutationRequest(
   request: Request,
   env: Env,
   key: string,
+  operation: 'uploads' | 'deletions',
 ): Promise<{ valid: boolean; error?: string; tokenData?: any }> {
   // 验证请求来源（如果配置了允许的来源）
   if (env.UPLOAD_ALLOWED_ORIGINS) {
@@ -511,7 +512,7 @@ async function validateUploadRequest(
       (referer && allowed.some((o) => referer.includes(o)));
 
     if (!isAllowed) {
-      return { valid: false, error: 'Origin not allowed for uploads' };
+      return { valid: false, error: `Origin not allowed for ${operation}` };
     }
   }
 
@@ -598,7 +599,12 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
     const key = url.pathname.slice(8); // 移除 "/upload/" 前缀
 
     // 验证上传请求安全性
-    const validation = await validateUploadRequest(request, env, key);
+    const validation = await validateMutationRequest(
+      request,
+      env,
+      key,
+      'uploads',
+    );
     if (!validation.valid) {
       return new Response(
         JSON.stringify({
@@ -756,6 +762,84 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
   }
 }
 
+// 处理文件删除请求
+async function handleDelete(request: Request, env: Env): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const key = url.pathname.slice(8); // 移除 "/delete/" 前缀
+
+    const validation = await validateMutationRequest(
+      request,
+      env,
+      key,
+      'deletions',
+    );
+    if (!validation.valid) {
+      return new Response(
+        JSON.stringify({
+          error: validation.error,
+          code: 'UNAUTHORIZED',
+        }),
+        {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    }
+
+    const pathValidation = validateFilePath(key);
+    if (!pathValidation.valid) {
+      return new Response(
+        JSON.stringify({
+          error: pathValidation.error,
+          code: 'INVALID_PATH',
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    }
+
+    await env.CDN_BUCKET.delete(key);
+
+    // R2 删除不会自动清除 Cache API 中的副本；这里只能清理当前数据中心
+    const resourceUrl = `${url.origin}${url.pathname.slice(7)}`;
+    await caches.default.delete(new Request(resourceUrl, { method: 'GET' }));
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        message: 'File deleted successfully',
+        data: {
+          key,
+          timestamp: new Date().toISOString(),
+        },
+      }),
+      {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      },
+    );
+  } catch (error) {
+    console.error('Delete error:', error);
+    return new Response(
+      JSON.stringify({
+        error: 'Delete failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        code: 'DELETE_ERROR',
+      }),
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+  }
+}
+
 export default {
   async fetch(
     request: Request,
@@ -770,7 +854,7 @@ export default {
         status: 200,
         headers: {
           'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+          'Access-Control-Allow-Methods': 'GET, HEAD, POST, DELETE, OPTIONS',
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': '86400',
         },
@@ -785,6 +869,11 @@ export default {
     // 处理文件上传请求
     if (request.method === 'POST' && url.pathname.startsWith('/upload/')) {
       return handleUpload(request, env);
+    }
+
+    // 处理文件删除请求
+    if (request.method === 'DELETE' && url.pathname.startsWith('/delete/')) {
+      return handleDelete(request, env);
     }
 
     // 仅支持 GET 和 HEAD 请求用于文件访问

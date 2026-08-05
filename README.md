@@ -14,6 +14,7 @@ Cloudflare Worker 用于安全地访问和上传 R2 存储桶中的静态资源�
 ✅ **文件管理**
 
 - 安全的文件上传API
+- 安全的文件删除 API
 - 服务端 Token 生成（JWT 密钥不暴露）
 - 自动MIME类型检测
 - 支持多种文件格式
@@ -218,6 +219,28 @@ const uploadResponse = await Taro.uploadFile({
     'Authorization': `Bearer ${token}`
   }
 });
+```
+
+#### DELETE /delete/:key - 删除文件
+
+删除接口使用与上传接口相同的 JWT Token，并校验 Token 的 `allowedPaths` 权限。删除成功后也会清理处理该请求的数据中心内的对应缓存；如需立即清除全球缓存，还需要调用 Cloudflare 的全局缓存清除 API。
+
+```bash
+curl -X DELETE https://cdn.tinykit.app/delete/hairstyle-taro/images/test.jpg \
+  -H "Authorization: Bearer <JWT_TOKEN>"
+```
+
+**响应**：
+
+```json
+{
+  "success": true,
+  "message": "File deleted successfully",
+  "data": {
+    "key": "hairstyle-taro/images/test.jpg",
+    "timestamp": "2026-08-05T12:00:00.000Z"
+  }
+}
 ```
 
 ---
